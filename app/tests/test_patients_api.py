@@ -1,3 +1,9 @@
+import os
+
+# Tests exercise /vapi/tools without needing a real shared secret; must be set
+# before app.main (and app.routers.vapi_tools) import os.getenv() at module load.
+os.environ["VAPI_WEBHOOK_SECRET"] = "change-me"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -140,3 +146,173 @@ def test_duplicate_phone_lookup_tool():
     result = resp.json()["results"][0]["result"]
     assert result["found"] is True
     assert result["last_name"] == "Doe"
+
+
+def test_lookup_patient_by_phone_not_found():
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "lookup_patient_by_phone",
+                            "arguments": {"phone_number": "5550000000"},
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is True
+    assert result["found"] is False
+
+
+def test_create_patient_tool_call_invalid_dob_does_not_crash():
+    """Agent submits a future DOB; webhook must return success:false, not 500 or raise."""
+    args = {**VALID_PATIENT, "date_of_birth": "2999-01-01", "phone_number": "5551112222"}
+    resp = client.post(
+        "/vapi/tools",
+        json={"message": {"toolCalls": [{"id": "c1", "function": {"name": "create_patient", "arguments": args}}]}},
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+    assert "date_of_birth" in result["error"]
+    # confirm nothing was persisted
+    assert len(client.get("/patients", params={"phone_number": "5551112222"}).json()["data"]) == 0
+
+
+def test_create_patient_tool_call_missing_required_field():
+    args = {k: v for k, v in VALID_PATIENT.items() if k != "state"}
+    resp = client.post(
+        "/vapi/tools",
+        json={"message": {"toolCalls": [{"id": "c1", "function": {"name": "create_patient", "arguments": args}}]}},
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+
+
+def test_create_patient_tool_call_invalid_phone_does_not_crash():
+    args = {**VALID_PATIENT, "phone_number": "123"}
+    resp = client.post(
+        "/vapi/tools",
+        json={"message": {"toolCalls": [{"id": "c1", "function": {"name": "create_patient", "arguments": args}}]}},
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+    assert "phone_number" in result["error"]
+
+
+def test_update_patient_tool_call_unknown_patient_id():
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "c1",
+                        "function": {
+                            "name": "update_patient",
+                            "arguments": {"patient_id": "does-not-exist", "city": "Dallas"},
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+def test_update_patient_tool_call_missing_patient_id():
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {"id": "c1", "function": {"name": "update_patient", "arguments": {"city": "Dallas"}}}
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+
+
+def test_update_patient_tool_call_success():
+    created = client.post("/patients", json=VALID_PATIENT).json()["data"]
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "c1",
+                        "function": {
+                            "name": "update_patient",
+                            "arguments": {"patient_id": created["patient_id"], "city": "Dallas"},
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is True
+    updated = client.get(f"/patients/{created['patient_id']}").json()["data"]
+    assert updated["city"] == "Dallas"
+
+
+def test_unknown_tool_name_does_not_crash():
+    resp = client.post(
+        "/vapi/tools",
+        json={"message": {"toolCalls": [{"id": "c1", "function": {"name": "delete_everything", "arguments": {}}}]}},
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+
+
+def test_malformed_empty_toolcalls_body_does_not_crash():
+    resp = client.post("/vapi/tools", json={"message": {}})
+    assert resp.status_code == 200
+    assert resp.json()["results"] == []
+
+
+def test_multiple_tool_calls_in_one_request():
+    """A single Vapi webhook call can carry multiple toolCalls; each must resolve independently."""
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "c1",
+                        "function": {
+                            "name": "lookup_patient_by_phone",
+                            "arguments": {"phone_number": "5559999999"},
+                        },
+                    },
+                    {
+                        "id": "c2",
+                        "function": {"name": "lookup_patient_by_phone", "arguments": {"phone_number": "123"}},
+                    },
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert len(results) == 2
+    assert results[0]["toolCallId"] == "c1"
+    assert results[1]["toolCallId"] == "c2"
