@@ -6,9 +6,13 @@ through a REST API backed by SQLite.
 
 ## Live Demo
 
-- **Phone number:** _fill in after Vapi provisioning — see Setup Part 2_
-- **API base URL:** `https://<your-ngrok-subdomain>.ngrok-free.dev` (or your deployed host)
-- **API docs (Swagger):** `<API base URL>/docs`
+- **Phone number:** +1 (681) 688-5071
+- **API base URL:** `https://splashed-tattered-hydrant.ngrok-free.dev`
+- **API docs (Swagger):** `https://splashed-tattered-hydrant.ngrok-free.dev/docs`
+
+> Note: both the phone number (Vapi) and the API (ngrok tunnel to a local process) depend on
+> this machine and its ngrok/uvicorn processes staying up. If either goes stale, see "Known
+> Limitations" for how to bring them back up.
 
 ## Architecture
 
