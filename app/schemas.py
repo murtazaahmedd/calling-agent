@@ -190,3 +190,58 @@ class PatientOut(PatientBase):
 class Envelope(BaseModel):
     data: Optional[object] = None
     error: Optional[str] = None
+
+
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class AppointmentCreate(BaseModel):
+    patient_id: str
+    appointment_date: date
+    appointment_time: str = Field(..., description="24h HH:MM")
+    reason: Optional[str] = None
+
+    @field_validator("appointment_time")
+    @classmethod
+    def v_time(cls, v):
+        if not TIME_RE.match(v):
+            raise ValueError("appointment_time must be 24h HH:MM format")
+        return v
+
+    @field_validator("appointment_date")
+    @classmethod
+    def v_date(cls, v):
+        if v < date.today():
+            raise ValueError("appointment_date cannot be in the past")
+        return v
+
+
+class AppointmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    appointment_id: str
+    patient_id: str
+    appointment_date: date
+    appointment_time: str
+    reason: Optional[str] = None
+    created_at: datetime
+
+
+class CallRecordCreate(BaseModel):
+    patient_id: Optional[str] = None
+    vapi_call_id: Optional[str] = None
+    transcript: Optional[str] = None
+    summary: Optional[str] = None
+    ended_reason: Optional[str] = None
+
+
+class CallRecordOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    call_record_id: str
+    patient_id: Optional[str] = None
+    vapi_call_id: Optional[str] = None
+    transcript: Optional[str] = None
+    summary: Optional[str] = None
+    ended_reason: Optional[str] = None
+    created_at: datetime

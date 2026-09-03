@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database import Base, engine, SessionLocal
-from app.routers import patients, vapi_tools
+from app.routers import patients, vapi_tools, appointments, dashboard
 from app.seed import seed_if_empty
 
 logging.basicConfig(
@@ -26,6 +26,8 @@ app = FastAPI(title="Patient Registration API", version="1.0.0")
 
 app.include_router(patients.router)
 app.include_router(vapi_tools.router)
+app.include_router(appointments.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/")

@@ -316,3 +316,156 @@ def test_multiple_tool_calls_in_one_request():
     assert len(results) == 2
     assert results[0]["toolCallId"] == "c1"
     assert results[1]["toolCallId"] == "c2"
+
+
+def test_get_available_appointment_slots():
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {"id": "c1", "function": {"name": "get_available_appointment_slots", "arguments": {}}}
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is True
+    assert len(result["slots"]) > 0
+    assert "date" in result["slots"][0] and "time" in result["slots"][0]
+
+
+def test_schedule_appointment_tool_call_success():
+    created = client.post("/patients", json=VALID_PATIENT).json()["data"]
+    from datetime import date, timedelta
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "c1",
+                        "function": {
+                            "name": "schedule_appointment",
+                            "arguments": {
+                                "patient_id": created["patient_id"],
+                                "appointment_date": tomorrow,
+                                "appointment_time": "09:00",
+                                "reason": "Annual checkup",
+                            },
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is True
+    assert result["appointment_id"]
+
+    appts = client.get(f"/patients/{created['patient_id']}/appointments").json()["data"]
+    assert len(appts) == 1
+    assert appts[0]["reason"] == "Annual checkup"
+
+
+def test_schedule_appointment_unknown_patient():
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "c1",
+                        "function": {
+                            "name": "schedule_appointment",
+                            "arguments": {
+                                "patient_id": "does-not-exist",
+                                "appointment_date": "2099-01-01",
+                                "appointment_time": "09:00",
+                            },
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+
+
+def test_schedule_appointment_invalid_time_format():
+    created = client.post("/patients", json=VALID_PATIENT).json()["data"]
+    resp = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "toolCalls": [
+                    {
+                        "id": "c1",
+                        "function": {
+                            "name": "schedule_appointment",
+                            "arguments": {
+                                "patient_id": created["patient_id"],
+                                "appointment_date": "2099-01-01",
+                                "appointment_time": "9am",
+                            },
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]["result"]
+    assert result["success"] is False
+
+
+def test_call_event_end_of_call_report_stores_transcript():
+    created = client.post("/patients", json=VALID_PATIENT).json()["data"]
+    resp = client.post(
+        "/vapi/call-events",
+        json={
+            "message": {
+                "type": "end-of-call-report",
+                "call": {"id": "call_abc123"},
+                "transcript": "AI: Hi... User: Hi, I'd like to register...",
+                "summary": "Registered new patient Jane Doe.",
+                "endedReason": "assistant-ended-call",
+                "metadata": {"patient_id": created["patient_id"]},
+            }
+        },
+    )
+    assert resp.status_code == 200
+
+    calls = client.get(f"/patients/{created['patient_id']}/calls").json()["data"]
+    assert len(calls) == 1
+    assert calls[0]["vapi_call_id"] == "call_abc123"
+    assert "Jane Doe" in calls[0]["summary"]
+
+
+def test_call_event_ignores_non_end_of_call_messages():
+    resp = client.post(
+        "/vapi/call-events",
+        json={"message": {"type": "speech-update"}},
+    )
+    assert resp.status_code == 200
+
+
+def test_dashboard_renders_html():
+    client.post("/patients", json=VALID_PATIENT)
+    resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "Jane" in resp.text
+    assert "Doe" in resp.text
+
+
+def test_dashboard_empty_state():
+    resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    assert "No patients registered yet" in resp.text

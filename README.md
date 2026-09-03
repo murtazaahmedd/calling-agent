@@ -82,9 +82,12 @@ All responses use the envelope `{ "data": ..., "error": ... }`.
 | POST | `/patients` | Create a patient. 201 + record on success, 422 on validation error. |
 | PUT | `/patients/:id` | Partial update (only fields provided are changed). |
 | DELETE | `/patients/:id` | Soft delete (`deleted_at` set; row stays in the DB). |
+| GET | `/patients/:id/appointments` | List a patient's scheduled appointments (bonus). |
+| GET | `/patients/:id/calls` | List a patient's stored call transcripts/summaries (bonus). |
+| GET | `/dashboard` | Server-rendered HTML page listing all patients (bonus). |
 
-Plus `GET /health` and `POST /vapi/tools` (the Vapi tool-call webhook, secured by a shared
-secret header `x-vapi-secret`).
+Plus `GET /health`, `POST /vapi/tools` (the Vapi tool-call webhook), and `POST /vapi/call-events`
+(the Vapi end-of-call-report webhook) — both secured by a shared secret header `x-vapi-secret`.
 
 ## Voice Agent Design
 
@@ -175,6 +178,31 @@ stdout satisfies the requirement and is trivially visible during a live review c
   before any other field is collected, so duplicates are caught early rather than after a full
   intake.
 
+## Bonus Features Implemented
+
+All six bonus challenges from the assessment are implemented:
+
+- **Duplicate Detection** — `lookup_patient_by_phone` fires as soon as a phone number is captured;
+  if found, the agent offers to update instead of create. Verified live on a real second call.
+- **Appointment Scheduling** — after a successful registration, the agent offers to book a first
+  appointment. `get_available_appointment_slots` returns mock weekday morning/afternoon slots for
+  the next 3 business days; `schedule_appointment` persists the chosen slot to a new `appointments`
+  table (`app/models.py`), linked by `patient_id`. Exposed via `GET /patients/:id/appointments`.
+- **Multi-language Support** — the system prompt instructs the agent to detect "Hablo español" (or
+  similar) and switch the entire conversation to Spanish immediately, no permission-asking. The
+  Deepgram transcriber is configured with `language: "multi"` so it can actually transcribe Spanish
+  speech accurately, not just have the LLM respond in Spanish over English-only STT.
+- **Call Recording/Transcript** — a second Vapi webhook (`POST /vapi/call-events`, configured as the
+  assistant's `serverUrl`) receives Vapi's `end-of-call-report` event, which carries the full
+  transcript and an LLM-generated summary. Stored in a `call_records` table linked to `patient_id`
+  when available. Exposed via `GET /patients/:id/calls`.
+- **Dashboard** — `GET /dashboard` is a self-contained server-rendered HTML page listing every
+  patient (including soft-deleted ones, visually muted) directly from the same database the voice
+  agent writes to. No build step, no JS framework — reloads to show new registrations.
+- **Automated Tests** — 29 pytest tests covering the REST API, the Vapi tool webhook (including
+  the new appointment/call-event tools), and edge cases (invalid data, unknown IDs, malformed
+  payloads). Run with `pytest app/tests -v`.
+
 ## Known Limitations & Trade-offs
 
 - **Local + ngrok hosting**: fast to stand up, but the ngrok URL and the backend process only stay
@@ -188,16 +216,20 @@ stdout satisfies the requirement and is trivially visible during a live review c
   tests can fully pin down — the prompt was designed and iterated by reasoning about the transcript
   it should produce; a full evaluation harness (recorded call transcripts scored automatically)
   would be the next investment.
-- **Bonus items not implemented**: multi-language switching, appointment scheduling, call
-  transcript storage, and a dashboard UI were left out to keep the core five requirement areas
-  solid within the time budget.
+- **Appointment scheduling is mock data**: slots are generated in-process (fixed times over the
+  next 3 business days), not backed by a real calendar/provider system — exactly as the assessment
+  allows ("mock data is fine").
+- **Call transcript linkage**: the end-of-call-report webhook only attaches a transcript to a
+  `patient_id` if the caller's metadata carries one; if a call never reaches a successful
+  create/update (e.g. they hang up mid-intake), the transcript is still stored but unattached
+  (`patient_id: null`) rather than dropped.
 
 ## Next Steps (if continuing past the time box)
 
 1. Deploy the backend to Railway/Render for a durable public URL instead of ngrok.
-2. Add a small dashboard (server-rendered or a single React page) hitting `GET /patients`.
-3. Store a call transcript/summary per patient (Vapi provides post-call transcripts via webhook —
-   add an `end-of-call-report` webhook handler and a `call_transcripts` table).
-4. Add API-level auth (API key header) in front of `/patients` for anything beyond local demo use.
-5. Multi-language: Vapi supports dynamic language switching on the transcriber/voice; wire a
-   "Hablo español" branch in the prompt plus a Spanish-capable voice/transcriber config.
+2. Add API-level auth (API key header) in front of `/patients` for anything beyond local demo use.
+3. Wire the end-of-call-report `patient_id` linkage through Vapi's call metadata explicitly
+   (currently relies on it being present in `message.metadata`) so every call transcript reliably
+   attaches to the right patient, including multi-turn update calls.
+4. Add a real calendar/provider backend behind appointment scheduling instead of mock slots.
+5. Add pagination and search-by-name-substring to the dashboard as the patient list grows.
