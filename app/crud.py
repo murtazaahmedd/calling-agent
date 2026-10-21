@@ -90,6 +90,27 @@ def create_call_record(db: Session, payload: CallRecordCreate) -> CallRecord:
     return record
 
 
+def get_call_record_by_vapi_id(db: Session, vapi_call_id: str) -> Optional[CallRecord]:
+    stmt = select(CallRecord).where(CallRecord.vapi_call_id == vapi_call_id)
+    return db.scalars(stmt).first()
+
+
+def upsert_call_record(db: Session, payload: CallRecordCreate) -> CallRecord:
+    """Create the record for a Vapi call, or fill in fields on the existing one.
+
+    A call's record is first created mid-call when a tool identifies the patient,
+    then completed by the end-of-call report; only non-null fields overwrite.
+    """
+    record = get_call_record_by_vapi_id(db, payload.vapi_call_id) if payload.vapi_call_id else None
+    if not record:
+        return create_call_record(db, payload)
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(record, field, value)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
 def list_call_records_for_patient(db: Session, patient_id: str) -> list[CallRecord]:
     stmt = (
         select(CallRecord)

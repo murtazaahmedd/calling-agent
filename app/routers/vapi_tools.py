@@ -61,6 +61,7 @@ async def handle_tool_call(
     body = await request.json()
 
     message = body.get("message", {})
+    vapi_call_id = (message.get("call") or {}).get("id")
     tool_calls = message.get("toolCalls") or message.get("toolCallList") or []
     if not tool_calls:
         # Some Vapi payload shapes nest a single toolCall differently; be lenient.
@@ -91,6 +92,15 @@ async def handle_tool_call(
         except Exception as exc:
             logger.exception("Tool call failed: %s", name)
             output = {"success": False, "error": str(exc)}
+
+        # Remember which patient this call is about, so the end-of-call report
+        # (which carries no patient_id) can attach its transcript to them.
+        if vapi_call_id and output.get("success") and output.get("patient_id"):
+            try:
+                crud.upsert_call_record(db, CallRecordCreate(vapi_call_id=vapi_call_id, patient_id=output["patient_id"]))
+            except Exception:
+                db.rollback()
+                logger.exception("Failed to link call %s to patient %s", vapi_call_id, output["patient_id"])
 
         results.append({"toolCallId": tool_call_id, "result": output})
 
@@ -219,7 +229,7 @@ async def handle_call_event(
     We only care about `end-of-call-report`, which carries the full transcript
     and summary once the call ends -- used to fulfil the "Call Recording/
     Transcript" bonus by linking it back to whichever patient_id the call's
-    tool calls created or updated (tracked via the assistant's call metadata).
+    tool calls identified (recorded against the Vapi call id in /vapi/tools).
     """
     _verify_secret(x_vapi_secret)
     body = await request.json()
@@ -235,14 +245,13 @@ async def handle_call_event(
     summary = message.get("summary") or (message.get("analysis") or {}).get("summary")
     ended_reason = message.get("endedReason")
 
-    # The assistant doesn't have a first-class "patient_id" call field, so we
-    # recover it by matching the most recent patient created/updated with this
-    # vapi_call_id, if any tool call in this session logged one via metadata;
-    # falling back to unattached (patient_id=None) is fine -- the transcript
-    # is still stored and visible on the dashboard's "Recent Calls" list.
+    # The report has no patient_id of its own: the record created by this call's
+    # tool calls already holds it. Explicit metadata still wins if present; if
+    # neither exists (caller hung up before being identified), the transcript
+    # is stored unattached (patient_id=None) rather than dropped.
     patient_id = message.get("metadata", {}).get("patient_id") if isinstance(message.get("metadata"), dict) else None
 
-    record = crud.create_call_record(
+    record = crud.upsert_call_record(
         db,
         CallRecordCreate(
             patient_id=patient_id,
@@ -252,5 +261,5 @@ async def handle_call_event(
             ended_reason=ended_reason,
         ),
     )
-    logger.info("CALL TRANSCRIPT STORED: call_record_id=%s vapi_call_id=%s patient_id=%s", record.call_record_id, vapi_call_id, patient_id)
+    logger.info("CALL TRANSCRIPT STORED: call_record_id=%s vapi_call_id=%s patient_id=%s", record.call_record_id, vapi_call_id, record.patient_id)
     return {"received": True}

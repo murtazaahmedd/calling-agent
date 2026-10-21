@@ -448,6 +448,47 @@ def test_call_event_end_of_call_report_stores_transcript():
     assert "Jane Doe" in calls[0]["summary"]
 
 
+def test_call_event_links_transcript_to_patient_from_tool_calls():
+    # Real Vapi end-of-call reports carry no patient_id; the link comes from
+    # the create_patient tool call made earlier in the same call.
+    created = client.post(
+        "/vapi/tools",
+        json={
+            "message": {
+                "call": {"id": "call_live_1"},
+                "toolCalls": [
+                    {
+                        "id": "tc_1",
+                        "function": {"name": "create_patient", "arguments": VALID_PATIENT},
+                    }
+                ],
+            }
+        },
+    ).json()["results"][0]["result"]
+    assert created["success"] is True
+
+    resp = client.post(
+        "/vapi/call-events",
+        json={
+            "message": {
+                "type": "end-of-call-report",
+                "call": {"id": "call_live_1"},
+                "artifact": {"transcript": "AI: Hi... User: I'd like to register."},
+                "analysis": {"summary": "Registered Jane Doe."},
+                "endedReason": "assistant-ended-call",
+            }
+        },
+    )
+    assert resp.status_code == 200
+
+    calls = client.get(f"/patients/{created['patient_id']}/calls").json()["data"]
+    assert len(calls) == 1
+    assert calls[0]["vapi_call_id"] == "call_live_1"
+    assert calls[0]["transcript"].startswith("AI: Hi")
+    assert calls[0]["summary"] == "Registered Jane Doe."
+    assert calls[0]["ended_reason"] == "assistant-ended-call"
+
+
 def test_call_event_ignores_non_end_of_call_messages():
     resp = client.post(
         "/vapi/call-events",

@@ -129,7 +129,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - Two seed patients (Jane Doe, Carlos Martinez) are inserted automatically on first boot if the
   table is empty (`app/seed.py`).
 - Swagger UI at `http://localhost:8000/docs`.
-- Run tests: `pytest app/tests -v` (29 tests covering CRUD, validation errors, soft delete,
+- Run tests: `pytest app/tests -v` (30 tests covering CRUD, validation errors, soft delete,
   persistence, and the Vapi tool/call-event webhooks).
 - Or run it in Docker, the same way Render does:
   `docker build -t calling-agent . && docker run -p 8000:8000 calling-agent`
@@ -222,12 +222,15 @@ All six bonus challenges from the assessment are implemented:
   speech accurately, not just have the LLM respond in Spanish over English-only STT.
 - **Call Recording/Transcript** — a second Vapi webhook (`POST /vapi/call-events`, configured as the
   assistant's `serverUrl`) receives Vapi's `end-of-call-report` event, which carries the full
-  transcript and an LLM-generated summary. Stored in a `call_records` table linked to `patient_id`
-  when available. Exposed via `GET /patients/:id/calls`.
+  transcript and an LLM-generated summary. Stored in a `call_records` table linked to `patient_id`.
+  The report itself carries no patient ID, so the link is made mid-call: whenever a tool call
+  identifies a patient (lookup hit, create, update, booking), `/vapi/tools` records that patient
+  against Vapi's call ID, and the end-of-call report fills in the transcript on that same record.
+  Exposed via `GET /patients/:id/calls`.
 - **Dashboard** — `GET /dashboard` is a self-contained server-rendered HTML page listing every
   patient (including soft-deleted ones, visually muted) directly from the same database the voice
   agent writes to. No build step, no JS framework — reloads to show new registrations.
-- **Automated Tests** — 29 pytest tests covering the REST API, the Vapi tool webhook (including
+- **Automated Tests** — 30 pytest tests covering the REST API, the Vapi tool webhook (including
   the new appointment/call-event tools), and edge cases (invalid data, unknown IDs, malformed
   payloads). Run with `pytest app/tests -v`.
 
@@ -248,16 +251,13 @@ All six bonus challenges from the assessment are implemented:
 - **Appointment scheduling is mock data**: slots are generated in-process (fixed times over the
   next 3 business days), not backed by a real calendar/provider system — exactly as the assessment
   allows ("mock data is fine").
-- **Call transcript linkage**: the end-of-call-report webhook only attaches a transcript to a
-  `patient_id` if the caller's metadata carries one; if a call never reaches a successful
-  create/update (e.g. they hang up mid-intake), the transcript is still stored but unattached
-  (`patient_id: null`) rather than dropped.
+- **Unidentified calls**: if a caller hangs up before any tool call identifies them (e.g. mid-intake),
+  the transcript is still stored but unattached (`patient_id: null`) rather than dropped, and there's
+  no view listing unattached transcripts yet.
 
 ## Next Steps (if continuing past the time box)
 
 1. Add API-level auth (API key header) in front of `/patients` for anything beyond local demo use.
-2. Wire the end-of-call-report `patient_id` linkage through Vapi's call metadata explicitly
-   (currently relies on it being present in `message.metadata`) so every call transcript reliably
-   attaches to the right patient, including multi-turn update calls.
+2. Add a "Recent Calls" view (including unattached transcripts) to the dashboard.
 3. Add a real calendar/provider backend behind appointment scheduling instead of mock slots.
 4. Add pagination and search-by-name-substring to the dashboard as the patient list grows.
