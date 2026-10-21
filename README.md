@@ -7,12 +7,12 @@ through a REST API backed by SQLite.
 ## Live Demo
 
 - **Phone number:** +1 (681) 688-5071
-- **API base URL:** `https://splashed-tattered-hydrant.ngrok-free.dev`
-- **API docs (Swagger):** `https://splashed-tattered-hydrant.ngrok-free.dev/docs`
+- **API base URL:** `https://calling-agent-api.onrender.com`
+- **API docs (Swagger):** `https://calling-agent-api.onrender.com/docs`
+- **Dashboard:** `https://calling-agent-api.onrender.com/dashboard`
 
-> Note: both the phone number (Vapi) and the API (ngrok tunnel to a local process) depend on
-> this machine and its ngrok/uvicorn processes staying up. If either goes stale, see "Known
-> Limitations" for how to bring them back up.
+> Note: the API runs on Render's free tier, which sleeps after ~15 minutes idle. The first request
+> after that takes ~30-50s to wake it up.
 
 ## Architecture
 
@@ -44,8 +44,9 @@ REST API (/patients, /patients/:id)  <-- used by both Vapi tools and external cl
   Chosen over Postgres purely for setup speed within the time box (explicitly sanctioned by the
   assessment as an acceptable trade-off). Swapping to Postgres later is a one-line `DATABASE_URL`
   change since access goes entirely through SQLAlchemy.
-- **Hosting: local + ngrok.** Fastest path to a publicly reachable HTTPS webhook for Vapi to call
-  during the review window. See "Known Limitations" for the trade-off this implies.
+- **Hosting: Render (Docker) + Render Postgres.** Defined in `render.yaml` as a Blueprint: a free
+  web service built from the `Dockerfile` and a free Postgres database wired in via `DATABASE_URL`.
+  SQLite is still the default for local development.
 
 ### Why a shared service layer instead of the voice agent calling itself over HTTP twice
 
@@ -205,10 +206,9 @@ All six bonus challenges from the assessment are implemented:
 
 ## Known Limitations & Trade-offs
 
-- **Local + ngrok hosting**: fast to stand up, but the ngrok URL and the backend process only stay
-  alive as long as this machine keeps them running; a real deployment (Railway/Render/Fly) would be
-  needed for a durable, always-on demo. This was a deliberate speed trade-off for the time box.
-- **SQLite**: fine for this dataset/load; would move to Postgres for concurrent writers or multi-instance deployment.
+- **Render free tier**: the web service sleeps when idle, so the first Vapi tool call after a quiet
+  period can be slow enough to time out; the free Postgres database expires after 30 days. A paid
+  instance (or an external Postgres such as Neon) removes both limits.
 - **No auth on the REST API itself** beyond the Vapi webhook secret — acceptable per the assessment
   ("do not store real patient data," no HIPAA requirement), but a real system would need API auth
   (API keys/OAuth) in front of `/patients`.
@@ -226,10 +226,9 @@ All six bonus challenges from the assessment are implemented:
 
 ## Next Steps (if continuing past the time box)
 
-1. Deploy the backend to Railway/Render for a durable public URL instead of ngrok.
-2. Add API-level auth (API key header) in front of `/patients` for anything beyond local demo use.
-3. Wire the end-of-call-report `patient_id` linkage through Vapi's call metadata explicitly
+1. Add API-level auth (API key header) in front of `/patients` for anything beyond local demo use.
+2. Wire the end-of-call-report `patient_id` linkage through Vapi's call metadata explicitly
    (currently relies on it being present in `message.metadata`) so every call transcript reliably
    attaches to the right patient, including multi-turn update calls.
-4. Add a real calendar/provider backend behind appointment scheduling instead of mock slots.
-5. Add pagination and search-by-name-substring to the dashboard as the patient list grows.
+3. Add a real calendar/provider backend behind appointment scheduling instead of mock slots.
+4. Add pagination and search-by-name-substring to the dashboard as the patient list grows.
