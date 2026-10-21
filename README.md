@@ -2,7 +2,7 @@
 
 A voice agent that answers a real phone number, conversationally registers a new patient
 (or recognizes a returning caller and offers to update their record), and persists the data
-through a REST API backed by SQLite.
+through a REST API backed by Postgres in production (SQLite for local development).
 
 ## Live Demo
 
@@ -11,8 +11,12 @@ through a REST API backed by SQLite.
 - **API docs (Swagger):** `https://calling-agent-api.onrender.com/docs`
 - **Dashboard:** `https://calling-agent-api.onrender.com/dashboard`
 
-> Note: the API runs on Render's free tier, which sleeps after ~15 minutes idle. The first request
-> after that takes ~30-50s to wake it up.
+> Notes:
+> - The API runs on Render's free tier, which sleeps after ~15 minutes idle. The first request
+>   after that takes ~30-50s, so open the dashboard URL to wake it before a demo call.
+> - The number is a free Vapi (US) number. Calls from outside the US may be dropped by the carrier
+>   before they reach Vapi. To try the agent without a phone, use **Talk to Assistant** on the
+>   assistant's page in the Vapi dashboard; it goes through the same tools and backend.
 
 ## Architecture
 
@@ -23,7 +27,7 @@ Phone Call (Caller)
 Vapi (Telephony + STT + TTS + LLM orchestration)
       |  tool calls (function calling) over HTTPS webhook
       v
-FastAPI backend  --------------------  SQLite (patients.db)
+FastAPI backend  --------------------  Postgres (Render) / SQLite (local)
       |
       v
 REST API (/patients, /patients/:id)  <-- used by both Vapi tools and external clients
@@ -40,10 +44,9 @@ REST API (/patients, /patients/:id)  <-- used by both Vapi tools and external cl
      create, or update a patient. This endpoint reuses the exact same service/validation layer
      (`app/crud.py`, `app/schemas.py`) as the REST API — the voice agent and any other API client
      go through identical server-side validation, so the agent can never bypass a rule.
-- **Database: SQLite.** File-based, zero setup, and fully sufficient for this data model and load.
-  Chosen over Postgres purely for setup speed within the time box (explicitly sanctioned by the
-  assessment as an acceptable trade-off). Swapping to Postgres later is a one-line `DATABASE_URL`
-  change since access goes entirely through SQLAlchemy.
+- **Database: Postgres in production, SQLite locally.** All access goes through SQLAlchemy, so the
+  backend is chosen purely by `DATABASE_URL`. SQLite keeps local setup at zero; the deployed
+  instance uses Postgres because Render's free disk is wiped on every restart/redeploy.
 - **Hosting: Render (Docker) + Render Postgres.** Defined in `render.yaml` as a Blueprint: a free
   web service built from the `Dockerfile` and a free Postgres database wired in via `DATABASE_URL`.
   SQLite is still the default for local development.
@@ -126,20 +129,43 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - Two seed patients (Jane Doe, Carlos Martinez) are inserted automatically on first boot if the
   table is empty (`app/seed.py`).
 - Swagger UI at `http://localhost:8000/docs`.
-- Run tests: `pytest app/tests -v` (11 tests covering CRUD, validation errors, soft delete,
-  persistence, and the Vapi duplicate-lookup tool).
+- Run tests: `pytest app/tests -v` (29 tests covering CRUD, validation errors, soft delete,
+  persistence, and the Vapi tool/call-event webhooks).
+- Or run it in Docker, the same way Render does:
+  `docker build -t calling-agent . && docker run -p 8000:8000 calling-agent`
 
-### Part 2 — Expose it publicly and wire up Vapi
+### Part 2 — Deploy to Render
 
-1. `ngrok http 8000` → copy the `https://...ngrok-free.dev` URL it prints.
-2. Create a free account at [vapi.ai](https://vapi.ai), grab an API key, and add an LLM provider
+The repo includes a [`render.yaml`](render.yaml) Blueprint that creates a free Docker web service
+(built from the [`Dockerfile`](Dockerfile)) and a free Postgres database, with `DATABASE_URL`
+wired in automatically.
+
+1. Push the repo to GitHub.
+2. In Render: **New → Blueprint**, select the repo, and click **Deploy Blueprint**.
+3. When prompted for `VAPI_WEBHOOK_SECRET`, enter the same value the Vapi tools send in their
+   `x-vapi-secret` header (or `change-me` to disable the check).
+4. Once it's live, check `https://<service>.onrender.com/health`. The startup logs print
+   `Vapi webhook secret check enabled/disabled` so you can confirm which secret mode is active.
+
+Every push to `main` redeploys automatically. Changing an environment variable needs
+**Save, rebuild, and deploy** to take effect.
+
+For local development without deploying, `ngrok http 8000` gives a temporary public URL you can
+use in place of the Render URL below.
+
+### Part 3 — Wire up Vapi
+
+1. Create a free account at [vapi.ai](https://vapi.ai), grab an API key, and add an LLM provider
    key (e.g. OpenAI) in Vapi's dashboard under Provider Keys.
 3. Create a new Assistant and import [`vapi/assistant.json`](vapi/assistant.json) (or paste its
-   `messages[0].content` as the system prompt and recreate the 3 tools manually). Replace every
-   `REPLACE_WITH_NGROK_URL` with your ngrok URL and `REPLACE_WITH_VAPI_WEBHOOK_SECRET` with the
-   same value you put in `.env` as `VAPI_WEBHOOK_SECRET`.
+   `messages[0].content` as the system prompt and recreate the 5 tools manually). Replace every
+   `REPLACE_WITH_NGROK_URL` with your public base URL (e.g. `https://calling-agent-api.onrender.com`)
+   and `REPLACE_WITH_VAPI_WEBHOOK_SECRET` with the same value as `VAPI_WEBHOOK_SECRET` on the server.
+   The assistant's server URL (`/vapi/call-events`) needs the same `x-vapi-secret` header, or
+   end-of-call transcripts are rejected.
 4. Buy/assign a free Vapi phone number to the assistant (Phone Numbers tab).
-5. Call the number. Watch `uvicorn` stdout — every tool call and every saved patient payload is
+5. Call the number (or use **Talk to Assistant** in the dashboard). Watch the server logs (Render
+   → **Logs**, or `uvicorn` stdout locally) — every tool call and every saved patient payload is
    logged there (Observability requirement).
 
 ## Environment Variables
@@ -147,8 +173,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | Variable | Required | Description |
 |---|---|---|
 | `PORT` | No | Port for uvicorn (default 8000). |
-| `DATABASE_URL` | No | SQLAlchemy URL, defaults to local SQLite file `patients.db`. |
-| `VAPI_WEBHOOK_SECRET` | Recommended | Shared secret checked against the `x-vapi-secret` header on `/vapi/tools`, so only Vapi (or whoever holds the secret) can trigger writes. |
+| `DATABASE_URL` | No | SQLAlchemy URL, defaults to local SQLite file `patients.db`. On Render it's set to the Postgres connection string automatically (`postgres://` URLs are accepted). |
+| `VAPI_WEBHOOK_SECRET` | Recommended | Shared secret checked against the `x-vapi-secret` header on `/vapi/tools` and `/vapi/call-events`, so only Vapi (or whoever holds the secret) can trigger writes. `change-me` (the default) disables the check. Surrounding whitespace/quotes are ignored. |
 
 Vapi itself holds its own keys (Vapi API key, OpenAI key) inside the Vapi dashboard — they never
 touch this codebase, so there's nothing telephony-related to leak from here.
@@ -158,7 +184,8 @@ touch this codebase, so there's nothing telephony-related to leak from here.
 Every tool call and every successful create/update logs a structured line to stdout via Python's
 `logging` module, including the full collected patient payload (`app/routers/vapi_tools.py`,
 `app/routers/patients.py`). In production this would ship to a log aggregator; for this exercise,
-stdout satisfies the requirement and is trivially visible during a live review call.
+stdout satisfies the requirement and is trivially visible during a live review call. On Render,
+the same lines show up under the service's **Logs** tab.
 
 ## Edge Cases & Resilience
 
@@ -209,6 +236,8 @@ All six bonus challenges from the assessment are implemented:
 - **Render free tier**: the web service sleeps when idle, so the first Vapi tool call after a quiet
   period can be slow enough to time out; the free Postgres database expires after 30 days. A paid
   instance (or an external Postgres such as Neon) removes both limits.
+- **Free Vapi phone number**: it has a small daily outbound call limit, and calls from outside the
+  US may be dropped before reaching Vapi. Importing a Twilio number into Vapi removes both limits.
 - **No auth on the REST API itself** beyond the Vapi webhook secret — acceptable per the assessment
   ("do not store real patient data," no HIPAA requirement), but a real system would need API auth
   (API keys/OAuth) in front of `/patients`.
