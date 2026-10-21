@@ -30,14 +30,19 @@ from app.schemas import (
 logger = logging.getLogger("vapi_tools")
 router = APIRouter(prefix="/vapi", tags=["vapi"])
 
-VAPI_WEBHOOK_SECRET = os.getenv("VAPI_WEBHOOK_SECRET", "change-me")
+# Strip whitespace/quotes that sneak in when pasting into a host's env var UI.
+VAPI_WEBHOOK_SECRET = os.getenv("VAPI_WEBHOOK_SECRET", "change-me").strip().strip("\"'")
+logger.warning(
+    "Vapi webhook secret check %s",
+    "disabled" if VAPI_WEBHOOK_SECRET in ("", "change-me") else f"enabled (secret length {len(VAPI_WEBHOOK_SECRET)})",
+)
 
 
 def _verify_secret(x_vapi_secret: str | None):
     # Basic shared-secret check. Configure the same value as a custom header
     # on the tool's server config in the Vapi dashboard.
     if VAPI_WEBHOOK_SECRET and VAPI_WEBHOOK_SECRET != "change-me":
-        if x_vapi_secret != VAPI_WEBHOOK_SECRET:
+        if (x_vapi_secret or "").strip() != VAPI_WEBHOOK_SECRET:
             raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
