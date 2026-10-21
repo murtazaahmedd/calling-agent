@@ -230,8 +230,9 @@ async def handle_call_event(
 
     call = message.get("call", {}) or {}
     vapi_call_id = call.get("id")
-    transcript = message.get("transcript")
-    summary = message.get("summary")
+    # Newer Vapi payloads nest these under `artifact` / `analysis`; older ones are top-level.
+    transcript = message.get("transcript") or (message.get("artifact") or {}).get("transcript")
+    summary = message.get("summary") or (message.get("analysis") or {}).get("summary")
     ended_reason = message.get("endedReason")
 
     # The assistant doesn't have a first-class "patient_id" call field, so we
